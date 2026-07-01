@@ -1,0 +1,17 @@
+{
+  "name": "moysklad-sync",
+  "version": "1.0.0",
+  "description": "Синхронизация МойСклад -> Google Sheets",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "googleapis": "^140.0.0",
+    "node-cron": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
