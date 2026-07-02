@@ -1,27 +1,23 @@
-// index.js
-// Синхронизация МойСклад -> Google Sheets
-// Запуск: node index.js   (разовый прогон)
-// На Railway настраивается через Cron Schedule в настройках сервиса —
-// тогда node-cron внутри файла не обязателен, но оставлен на случай
-// постоянно работающего сервиса (worker), а не cron job.
+// index.js — МойСклад → Google Sheets
+// Листы: Заказы_МС, Заказы_МС_Детали, Выручка_МС, Выручка_МС_Детали, Возвраты_МС
 
 const { google } = require('googleapis');
 
 // ===================== КОНФИГ =====================
 const CONFIG = {
-  TOKEN: process.env.MS_TOKEN,                  // токен МойСклад
-  SPREADSHEET_ID: process.env.SPREADSHEET_ID,    // ID Google-таблицы
-  SHEET_OTGRUZKI: 'Выручка_МС',
-  SHEET_POZICII: 'Выручка_МС_Детали',
-  SHEET_VOZVRAT: 'Возвраты_МС',
-  DAYS_BACK: 180
+  TOKEN:          process.env.MS_TOKEN,
+  SPREADSHEET_ID: process.env.SPREADSHEET_ID,
+  DATE_FROM:      '2025-01-01 00:00:00',   // с начала 2025 года
+  SHEET_ORDERS:        'Заказы_МС',
+  SHEET_ORDERS_DETAIL: 'Заказы_МС_Детали',
+  SHEET_DEMAND:        'Выручка_МС',
+  SHEET_DEMAND_DETAIL: 'Выручка_МС_Детали',
+  SHEET_RETURNS:       'Возвраты_МС',
 };
 
 const BASE_URL = 'https://api.moysklad.ru/api/remap/1.2';
 
-// ===================== GOOGLE SHEETS AUTH =====================
-// На Railway: переменная окружения GOOGLE_SERVICE_ACCOUNT_JSON
-// содержит JSON ключ сервисного аккаунта целиком (как строку).
+// ===================== GOOGLE AUTH =====================
 function getSheetsClient() {
   const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
   const auth = new google.auth.GoogleAuth({
@@ -31,7 +27,7 @@ function getSheetsClient() {
   return google.sheets({ version: 'v4', auth });
 }
 
-// ===================== МОЙСКЛАД API =====================
+// ===================== API МОЙСКЛАД =====================
 async function apiRequest(url) {
   const resp = await fetch(url, {
     method: 'GET',
@@ -60,15 +56,6 @@ function formatDate(s) {
   return `${dd}.${mm}.${yyyy}`;
 }
 
-function buildDateFilter() {
-  const d = new Date();
-  d.setDate(d.getDate() - CONFIG.DAYS_BACK);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day} 00:00:00`;
-}
-
 // ===================== СПРАВОЧНИК ТОВАРОВ =====================
 async function loadPriceMap() {
   console.log('Загрузка справочника товаров...');
@@ -78,86 +65,167 @@ async function loadPriceMap() {
   let total = Infinity;
 
   while (offset < total) {
-    const url = `${BASE_URL}/entity/product?limit=${limit}&offset=${offset}`;
-    const resp = await apiRequest(url);
+    const resp = await apiRequest(`${BASE_URL}/entity/product?limit=${limit}&offset=${offset}`);
     if (!resp) break;
     total = resp.meta.size;
-
-    resp.rows.forEach(product => {
-      const id = extractId(product.meta.href);
-      let buyPrice = 0;
-      if (product.buyPrice && product.buyPrice.value) {
-        buyPrice = product.buyPrice.value / 100;
-      }
+    resp.rows.forEach(p => {
+      const id = extractId(p.meta.href);
       priceMap[id] = {
-        buyPrice,
-        name: product.name || '',
-        code: product.code || '',
-        article: product.article || ''
+        buyPrice: (p.buyPrice && p.buyPrice.value) ? p.buyPrice.value / 100 : 0,
+        name:    p.name    || '',
+        code:    p.code    || '',
+        article: p.article || ''
       };
     });
-
     offset += limit;
-    console.log(`Загружено товаров: ${Math.min(offset, total)} из ${total}`);
+    console.log(`Товары: ${Math.min(offset, total)} из ${total}`);
   }
   return priceMap;
 }
 
-// ===================== ОТГРУЗКИ =====================
-async function loadOtgruzki(priceMap) {
-  console.log('Загрузка отгрузок...');
-  const dateFrom = buildDateFilter();
-  const rowsO = [];
-  const rowsP = [];
+// ===================== ЗАКАЗЫ ПОКУПАТЕЛЕЙ =====================
+async function loadOrders(priceMap) {
+  console.log('Загрузка заказов покупателей...');
+  const rowsO = [], rowsD = [];
   let offset = 0;
-  const limit = 1000;
+  const limit = 100;
   let total = Infinity;
+  const filter = encodeURIComponent('moment>=' + CONFIG.DATE_FROM);
 
   while (offset < total) {
-    const filter = encodeURIComponent('moment>=' + dateFrom);
-    const url = `${BASE_URL}/entity/demand?limit=${limit}&offset=${offset}` +
-      `&filter=${filter}` +
-      `&expand=agent,store,salesChannel,positions,positions.assortment` +
-      `&order=moment%2Casc`;
+    const url = `${BASE_URL}/entity/customerorder`
+      + `?limit=${limit}&offset=${offset}`
+      + `&filter=${filter}`
+      + `&expand=agent,store,salesChannel,positions,positions.assortment`
+      + `&order=moment%2Casc`;
+
+    const resp = await apiRequest(url);
+    if (!resp) break;
+    total = resp.meta.size;
+    console.log(`Заказы: ${Math.min(offset + limit, total)} из ${total}`);
+
+    for (const doc of resp.rows) {
+      const date    = formatDate(doc.moment);
+      const number  = doc.name || '';
+      const agent   = doc.agent ? doc.agent.name : '';
+      const store   = doc.store ? doc.store.name : '';
+      const channel = doc.salesChannel ? doc.salesChannel.name : (store || 'Не указан');
+      const sum     = (doc.sum || 0) / 100;
+      const paid    = (doc.payedSum || 0) / 100;
+      const shipped = (doc.shippedSum || 0) / 100;
+      const status  = doc.applicable ? 'Проведён' : 'Черновик';
+      const docId   = extractId(doc.meta.href);
+
+      // Кастомные атрибуты (менеджер и др.)
+      let manager = '';
+      if (doc.attributes && doc.attributes.length > 0) {
+        // Берём все атрибуты — запишем их в одну колонку чтобы видеть названия
+        const attrs = doc.attributes.map(a => `${a.name}: ${a.value && a.value.name ? a.value.name : (a.value || '')}`);
+        manager = attrs.join(' | ');
+      }
+
+      // Позиции заказа
+      let cost = 0;
+      if (doc.positions && doc.positions.rows) {
+        for (const pos of doc.positions.rows) {
+          const productId   = pos.assortment ? extractId(pos.assortment.meta.href) : '';
+          const productInfo = priceMap[productId] || {};
+          const qty    = pos.quantity || 0;
+          const price  = (pos.price || 0) / 100;
+          const disc   = pos.discount || 0;
+          const priceWithDisc = price * (1 - disc / 100);
+          const cpUnit = (pos.costPrice && pos.costPrice > 0)
+            ? pos.costPrice / 100
+            : (productInfo.buyPrice || 0);
+          const sumSale = qty * priceWithDisc;
+          const sumCost = qty * cpUnit;
+          cost += sumCost;
+
+          const p = pos.assortment || {};
+          rowsD.push([
+            date, number, agent, channel,
+            productInfo.code    || p.code    || '',
+            productInfo.name    || p.name    || '',
+            productInfo.article || p.article || '',
+            qty, price, disc, priceWithDisc, sumSale,
+            cpUnit, sumCost, sumSale - sumCost
+          ]);
+        }
+      }
+
+      const grossProfit = sum - cost;
+      const margin = sum > 0 ? Math.round((grossProfit / sum) * 100) : 0;
+
+      rowsO.push([
+        date, number, agent, store, channel,
+        sum, paid, shipped,
+        cost, grossProfit, margin,
+        doc.invoicesOut ? doc.invoicesOut.length : 0,
+        status, manager,
+        doc.description || '', docId
+      ]);
+    }
+    offset += limit;
+  }
+  return { rowsO, rowsD };
+}
+
+// ===================== ОТГРУЗКИ =====================
+async function loadDemands(priceMap) {
+  console.log('Загрузка отгрузок...');
+  const rowsO = [], rowsD = [];
+  let offset = 0;
+  const limit = 100;
+  let total = Infinity;
+  const filter = encodeURIComponent('moment>=' + CONFIG.DATE_FROM);
+
+  while (offset < total) {
+    const url = `${BASE_URL}/entity/demand`
+      + `?limit=${limit}&offset=${offset}`
+      + `&filter=${filter}`
+      + `&expand=agent,store,salesChannel,positions,positions.assortment`
+      + `&order=moment%2Casc`;
 
     const resp = await apiRequest(url);
     if (!resp) break;
     total = resp.meta.size;
     console.log(`Отгрузки: ${Math.min(offset + limit, total)} из ${total}`);
 
-    resp.rows.forEach(doc => {
-      const date = formatDate(doc.moment);
-      const number = doc.name || '';
-      const store = doc.store ? doc.store.name : '';
+    for (const doc of resp.rows) {
+      const date    = formatDate(doc.moment);
+      const number  = doc.name || '';
+      const store   = doc.store ? doc.store.name : '';
       const channel = doc.salesChannel ? doc.salesChannel.name : (store || 'Не указан');
-      const agent = doc.agent ? doc.agent.name : '';
-      const sum = (doc.sum || 0) / 100;
+      const agent   = doc.agent ? doc.agent.name : '';
+      const sum     = (doc.sum || 0) / 100;
+      const docId   = extractId(doc.meta.href);
       let cost = 0;
-      const docId = extractId(doc.meta.href);
 
       if (doc.positions && doc.positions.rows) {
-        doc.positions.rows.forEach(pos => {
-          const productId = pos.assortment ? extractId(pos.assortment.meta.href) : '';
+        for (const pos of doc.positions.rows) {
+          const productId   = pos.assortment ? extractId(pos.assortment.meta.href) : '';
           const productInfo = priceMap[productId] || {};
-          const qty = pos.quantity || 0;
-          const price = (pos.price || 0) / 100;
+          const qty    = pos.quantity || 0;
+          const price  = (pos.price || 0) / 100;
+          const disc   = pos.discount || 0;
+          const priceWithDisc = price * (1 - disc / 100);
           const cpUnit = (pos.costPrice && pos.costPrice > 0)
             ? pos.costPrice / 100
             : (productInfo.buyPrice || 0);
-          const sumSale = qty * price;
+          const sumSale = qty * priceWithDisc;
           const sumCost = qty * cpUnit;
-          const profit = sumSale - sumCost;
           cost += sumCost;
 
           const p = pos.assortment || {};
-          rowsP.push([
-            date, number, channel,
-            productInfo.code || p.code || '',
-            productInfo.name || p.name || '',
+          rowsD.push([
+            date, number, agent, channel,
+            productInfo.code    || p.code    || '',
+            productInfo.name    || p.name    || '',
             productInfo.article || p.article || '',
-            qty, price, sumSale, cpUnit, sumCost, profit
+            qty, price, disc, priceWithDisc, sumSale,
+            cpUnit, sumCost, sumSale - sumCost
           ]);
-        });
+        }
       }
 
       const grossProfit = sum - cost;
@@ -169,48 +237,45 @@ async function loadOtgruzki(priceMap) {
         doc.applicable ? 'Проведён' : 'Черновик',
         doc.description || '', docId
       ]);
-    });
-
+    }
     offset += limit;
   }
-
-  return { rowsO, rowsP };
+  return { rowsO, rowsD };
 }
 
 // ===================== ВОЗВРАТЫ =====================
-async function loadVozvraty(priceMap) {
+async function loadReturns(priceMap) {
   console.log('Загрузка возвратов...');
-  const dateFrom = buildDateFilter();
   const rows = [];
   let offset = 0;
-  const limit = 1000;
+  const limit = 100;
   let total = Infinity;
+  const filter = encodeURIComponent('moment>=' + CONFIG.DATE_FROM);
 
   while (offset < total) {
-    const filter = encodeURIComponent('moment>=' + dateFrom);
-    const url = `${BASE_URL}/entity/salesreturn?limit=${limit}&offset=${offset}` +
-      `&filter=${filter}` +
-      `&expand=agent,store,salesChannel,positions,positions.assortment` +
-      `&order=moment%2Casc`;
+    const url = `${BASE_URL}/entity/salesreturn`
+      + `?limit=${limit}&offset=${offset}`
+      + `&filter=${filter}`
+      + `&expand=agent,store,salesChannel,positions,positions.assortment`
+      + `&order=moment%2Casc`;
 
     const resp = await apiRequest(url);
     if (!resp) break;
     total = resp.meta.size;
 
-    resp.rows.forEach(doc => {
+    for (const doc of resp.rows) {
       let cost = 0;
       if (doc.positions && doc.positions.rows) {
-        doc.positions.rows.forEach(pos => {
-          const productId = pos.assortment ? extractId(pos.assortment.meta.href) : '';
+        for (const pos of doc.positions.rows) {
+          const productId   = pos.assortment ? extractId(pos.assortment.meta.href) : '';
           const productInfo = priceMap[productId] || {};
-          const qty = pos.quantity || 0;
+          const qty    = pos.quantity || 0;
           const cpUnit = (pos.costPrice && pos.costPrice > 0)
             ? pos.costPrice / 100
             : (productInfo.buyPrice || 0);
           cost += qty * cpUnit;
-        });
+        }
       }
-
       const channel = doc.salesChannel ? doc.salesChannel.name
         : (doc.store ? doc.store.name : 'Не указан');
 
@@ -225,92 +290,101 @@ async function loadVozvraty(priceMap) {
         doc.description || '',
         extractId(doc.meta.href)
       ]);
-    });
-
+    }
     offset += limit;
   }
-
   return rows;
 }
 
 // ===================== ЗАПИСЬ В GOOGLE SHEETS =====================
-async function writeSheet(sheets, sheetName, headers, rows) {
-  // Убедиться что лист существует
+async function writeSheet(sheets, name, headers, rows) {
+  // Создать лист если нет
   const meta = await sheets.spreadsheets.get({ spreadsheetId: CONFIG.SPREADSHEET_ID });
-  const exists = meta.data.sheets.some(s => s.properties.title === sheetName);
+  const exists = meta.data.sheets.some(s => s.properties.title === name);
   if (!exists) {
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: CONFIG.SPREADSHEET_ID,
-      requestBody: { requests: [{ addSheet: { properties: { title: sheetName } } }] }
+      requestBody: { requests: [{ addSheet: { properties: { title: name } } }] }
     });
   }
 
-  // Очистить и записать
   await sheets.spreadsheets.values.clear({
     spreadsheetId: CONFIG.SPREADSHEET_ID,
-    range: sheetName
+    range: name
   });
 
-  const values = [headers, ...rows];
   await sheets.spreadsheets.values.update({
     spreadsheetId: CONFIG.SPREADSHEET_ID,
-    range: `${sheetName}!A1`,
+    range: `${name}!A1`,
     valueInputOption: 'RAW',
-    requestBody: { values }
+    requestBody: { values: [headers, ...rows] }
   });
 
-  console.log(`Записано в "${sheetName}": ${rows.length} строк`);
+  console.log(`✅ "${name}": ${rows.length} строк`);
 }
 
 // ===================== ГЛАВНАЯ ФУНКЦИЯ =====================
 async function syncAll() {
   console.log('=== Запуск синхронизации МойСклад ===');
-  const startTime = Date.now();
+  const start = Date.now();
 
   try {
     const sheets = getSheetsClient();
     const priceMap = await loadPriceMap();
-    console.log(`Товаров в справочнике: ${Object.keys(priceMap).length}`);
+    console.log(`Товаров: ${Object.keys(priceMap).length}`);
 
-    const { rowsO, rowsP } = await loadOtgruzki(priceMap);
-    const rowsV = await loadVozvraty(priceMap);
+    // Заказы покупателей
+    const { rowsO: ordersO, rowsD: ordersD } = await loadOrders(priceMap);
+    await writeSheet(sheets, CONFIG.SHEET_ORDERS, [
+      'Дата', 'Номер', 'Контрагент', 'Склад', 'Канал продаж',
+      'Сумма', 'Оплачено', 'Отгружено',
+      'Себестоимость', 'Валовая прибыль', 'Маржа %',
+      'Кол-во счетов', 'Статус', 'Атрибуты (менеджер и др.)',
+      'Комментарий', 'ID документа'
+    ], ordersO);
 
-    await writeSheet(sheets, CONFIG.SHEET_OTGRUZKI, [
+    await writeSheet(sheets, CONFIG.SHEET_ORDERS_DETAIL, [
+      'Дата', 'Номер заказа', 'Контрагент', 'Канал продаж',
+      'Код товара', 'Наименование', 'Артикул',
+      'Кол-во', 'Цена', 'Скидка %', 'Цена со скидкой', 'Сумма продажи',
+      'Себест. ед.', 'Сумма себест.', 'Прибыль по позиции'
+    ], ordersD);
+
+    // Отгрузки
+    const { rowsO: demandO, rowsD: demandD } = await loadDemands(priceMap);
+    await writeSheet(sheets, CONFIG.SHEET_DEMAND, [
       'Дата', 'Номер', 'Склад', 'Канал продаж', 'Контрагент',
       'Сумма (сом)', 'Себестоимость (сом)', 'Валовая прибыль',
       'Маржа %', 'Статус', 'Комментарий', 'ID документа'
-    ], rowsO);
+    ], demandO);
 
-    await writeSheet(sheets, CONFIG.SHEET_POZICII, [
-      'Дата', 'Номер отгрузки', 'Канал продаж', 'Код товара', 'Наименование', 'Артикул',
-      'Кол-во', 'Цена продажи', 'Сумма продажи',
+    await writeSheet(sheets, CONFIG.SHEET_DEMAND_DETAIL, [
+      'Дата', 'Номер отгрузки', 'Контрагент', 'Канал продаж',
+      'Код товара', 'Наименование', 'Артикул',
+      'Кол-во', 'Цена', 'Скидка %', 'Цена со скидкой', 'Сумма продажи',
       'Себест. ед.', 'Сумма себест.', 'Прибыль по позиции'
-    ], rowsP);
+    ], demandD);
 
-    await writeSheet(sheets, CONFIG.SHEET_VOZVRAT, [
+    // Возвраты
+    const returns = await loadReturns(priceMap);
+    await writeSheet(sheets, CONFIG.SHEET_RETURNS, [
       'Дата', 'Номер', 'Контрагент', 'Склад', 'Канал продаж',
       'Сумма возврата (сом)', 'Себестоимость (сом)',
       'Комментарий', 'ID документа'
-    ], rowsV);
+    ], returns);
 
-    const seconds = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`=== Готово за ${seconds} сек ===`);
+    console.log(`=== Готово за ${((Date.now() - start) / 1000).toFixed(1)} сек ===`);
   } catch (e) {
-    console.error('ОШИБКА:', e.message);
-    console.error(e.stack);
+    console.error('ОШИБКА:', e.message, e.stack);
   }
 }
 
 // ===================== ЗАПУСК =====================
-// Если переменная окружения RUN_ON_CRON=true — держим процесс живым с расписанием.
-// Иначе — разовый запуск и выход (так удобно тестировать и так работает Railway Cron Job).
 if (process.env.RUN_ON_CRON === 'true') {
   const cron = require('node-cron');
-  console.log('Сервис запущен. Синхронизация каждый день в 03:00 (по времени контейнера).');
-  cron.schedule('0 3 * * *', () => {
-    syncAll();
-  });
-  syncAll(); // первый прогон сразу при старте
+  console.log('Сервис запущен. Синхронизация каждый день в 03:00 по Бишкеку.');
+  cron.schedule('0 21 * * *', () => syncAll()); // 21:00 UTC = 03:00 Бишкек (UTC+6)
+  syncAll();
 } else {
   syncAll().then(() => process.exit(0));
 }
