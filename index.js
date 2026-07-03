@@ -9,6 +9,10 @@ const CONFIG = {
   SHEET_DEMAND:        'Выручка_МС',
   SHEET_DEMAND_DETAIL: 'Выручка_МС_Детали',
   SHEET_RETURNS:       'Возвраты_МС',
+  SHEET_PAY_IN:        'Платежи_Приход',
+  SHEET_PAY_OUT:       'Платежи_Расход',
+  SHEET_SUPPLY:        'Приёмки_МС',
+  SHEET_PURCHASE:      'Закупки_МС',
 };
 
 const BASE_URL = 'https://api.moysklad.ru/api/remap/1.2';
@@ -50,6 +54,7 @@ function formatDate(s) {
   return `${dd}.${mm}.${yyyy}`;
 }
 
+// ===================== СПРАВОЧНИК ТОВАРОВ =====================
 async function loadPriceMap() {
   console.log('Загрузка справочника товаров...');
   const priceMap = {};
@@ -76,6 +81,7 @@ async function loadPriceMap() {
   return priceMap;
 }
 
+// ===================== ЗАКАЗЫ ПОКУПАТЕЛЕЙ =====================
 async function loadOrders(priceMap) {
   console.log('Загрузка заказов покупателей...');
   const rowsO = [], rowsD = [];
@@ -106,7 +112,6 @@ async function loadOrders(priceMap) {
       const paid    = (doc.payedSum || 0) / 100;
       const shipped = (doc.shippedSum || 0) / 100;
       const status  = doc.applicable ? 'Проведён' : 'Черновик';
-      // ключ связи — уникальный ID документа
       const docId   = extractId(doc.meta.href);
 
       let manager = '';
@@ -133,10 +138,7 @@ async function loadOrders(priceMap) {
 
           const p = pos.assortment || {};
           rowsD.push([
-            date,
-            docId,   // ← ID документа вместо number — для связи в Power BI
-            number,  // ← номер заказа для отображения
-            agent, channel,
+            date, docId, number, agent, channel,
             productInfo.code    || p.code    || '',
             productInfo.name    || p.name    || '',
             productInfo.article || p.article || '',
@@ -163,6 +165,7 @@ async function loadOrders(priceMap) {
   return { rowsO, rowsD };
 }
 
+// ===================== ОТГРУЗКИ =====================
 async function loadDemands(priceMap) {
   console.log('Загрузка отгрузок...');
   const rowsO = [], rowsD = [];
@@ -210,10 +213,7 @@ async function loadDemands(priceMap) {
 
           const p = pos.assortment || {};
           rowsD.push([
-            date,
-            docId,   // ← ID документа вместо number — для связи в Power BI
-            number,  // ← номер отгрузки для отображения
-            agent, channel,
+            date, docId, number, agent, channel,
             productInfo.code    || p.code    || '',
             productInfo.name    || p.name    || '',
             productInfo.article || p.article || '',
@@ -238,6 +238,7 @@ async function loadDemands(priceMap) {
   return { rowsO, rowsD };
 }
 
+// ===================== ВОЗВРАТЫ =====================
 async function loadReturns(priceMap) {
   console.log('Загрузка возвратов...');
   const rows = [];
@@ -290,6 +291,175 @@ async function loadReturns(priceMap) {
   return rows;
 }
 
+// ===================== ВХОДЯЩИЕ ПЛАТЕЖИ (ОДС приход) =====================
+async function loadPaymentsIn() {
+  console.log('Загрузка входящих платежей...');
+  const rows = [];
+  let offset = 0;
+  const limit = 100;
+  let total = Infinity;
+  const filter = encodeURIComponent('moment>=' + CONFIG.DATE_FROM);
+
+  while (offset < total) {
+    const url = `${BASE_URL}/entity/paymentin`
+      + `?limit=${limit}&offset=${offset}`
+      + `&filter=${filter}`
+      + `&expand=agent,expenseItem,contract`
+      + `&order=moment%2Casc`;
+
+    const resp = await apiRequest(url);
+    if (!resp) break;
+    total = resp.meta.size;
+    console.log(`Платежи (приход): ${Math.min(offset + limit, total)} из ${total}`);
+
+    for (const doc of resp.rows) {
+      rows.push([
+        formatDate(doc.moment),
+        doc.name || '',
+        doc.agent ? doc.agent.name : '',
+        (doc.sum || 0) / 100,
+        doc.paymentPurpose || '',
+        doc.expenseItem ? doc.expenseItem.name : '',
+        doc.applicable ? 'Проведён' : 'Черновик',
+        doc.description || '',
+        extractId(doc.meta.href)
+      ]);
+    }
+    offset += limit;
+  }
+  return rows;
+}
+
+// ===================== ИСХОДЯЩИЕ ПЛАТЕЖИ (ОДС расход) =====================
+async function loadPaymentsOut() {
+  console.log('Загрузка исходящих платежей...');
+  const rows = [];
+  let offset = 0;
+  const limit = 100;
+  let total = Infinity;
+  const filter = encodeURIComponent('moment>=' + CONFIG.DATE_FROM);
+
+  while (offset < total) {
+    const url = `${BASE_URL}/entity/paymentout`
+      + `?limit=${limit}&offset=${offset}`
+      + `&filter=${filter}`
+      + `&expand=agent,expenseItem,contract`
+      + `&order=moment%2Casc`;
+
+    const resp = await apiRequest(url);
+    if (!resp) break;
+    total = resp.meta.size;
+    console.log(`Платежи (расход): ${Math.min(offset + limit, total)} из ${total}`);
+
+    for (const doc of resp.rows) {
+      rows.push([
+        formatDate(doc.moment),
+        doc.name || '',
+        doc.agent ? doc.agent.name : '',
+        (doc.sum || 0) / 100,
+        doc.paymentPurpose || '',
+        doc.expenseItem ? doc.expenseItem.name : '',
+        doc.applicable ? 'Проведён' : 'Черновик',
+        doc.description || '',
+        extractId(doc.meta.href)
+      ]);
+    }
+    offset += limit;
+  }
+  return rows;
+}
+
+// ===================== ПРИЁМКИ ОТ ПОСТАВЩИКОВ =====================
+async function loadSupplies(priceMap) {
+  console.log('Загрузка приёмок...');
+  const rows = [];
+  let offset = 0;
+  const limit = 100;
+  let total = Infinity;
+  const filter = encodeURIComponent('moment>=' + CONFIG.DATE_FROM);
+
+  while (offset < total) {
+    const url = `${BASE_URL}/entity/supply`
+      + `?limit=${limit}&offset=${offset}`
+      + `&filter=${filter}`
+      + `&expand=agent,store,positions,positions.assortment`
+      + `&order=moment%2Casc`;
+
+    const resp = await apiRequest(url);
+    if (!resp) break;
+    total = resp.meta.size;
+    console.log(`Приёмки: ${Math.min(offset + limit, total)} из ${total}`);
+
+    for (const doc of resp.rows) {
+      const docId  = extractId(doc.meta.href);
+      const date   = formatDate(doc.moment);
+      const agent  = doc.agent ? doc.agent.name : '';
+      const store  = doc.store ? doc.store.name : '';
+
+      if (doc.positions && doc.positions.rows) {
+        for (const pos of doc.positions.rows) {
+          const productId   = pos.assortment ? extractId(pos.assortment.meta.href) : '';
+          const productInfo = priceMap[productId] || {};
+          const qty    = pos.quantity || 0;
+          const price  = (pos.price || 0) / 100;
+
+          const p = pos.assortment || {};
+          rows.push([
+            date, docId, doc.name || '', agent, store,
+            productInfo.code    || p.code    || '',
+            productInfo.name    || p.name    || '',
+            productInfo.article || p.article || '',
+            qty, price, qty * price
+          ]);
+        }
+      }
+    }
+    offset += limit;
+  }
+  return rows;
+}
+
+// ===================== ЗАКАЗЫ ПОСТАВЩИКАМ =====================
+async function loadPurchaseOrders() {
+  console.log('Загрузка заказов поставщикам...');
+  const rows = [];
+  let offset = 0;
+  const limit = 100;
+  let total = Infinity;
+  const filter = encodeURIComponent('moment>=' + CONFIG.DATE_FROM);
+
+  while (offset < total) {
+    const url = `${BASE_URL}/entity/purchaseorder`
+      + `?limit=${limit}&offset=${offset}`
+      + `&filter=${filter}`
+      + `&expand=agent,store`
+      + `&order=moment%2Casc`;
+
+    const resp = await apiRequest(url);
+    if (!resp) break;
+    total = resp.meta.size;
+    console.log(`Заказы поставщикам: ${Math.min(offset + limit, total)} из ${total}`);
+
+    for (const doc of resp.rows) {
+      rows.push([
+        formatDate(doc.moment),
+        doc.name || '',
+        doc.agent ? doc.agent.name : '',
+        doc.store ? doc.store.name : '',
+        (doc.sum || 0) / 100,
+        (doc.payedSum || 0) / 100,
+        (doc.shippedSum || 0) / 100,
+        doc.applicable ? 'Проведён' : 'Черновик',
+        doc.description || '',
+        extractId(doc.meta.href)
+      ]);
+    }
+    offset += limit;
+  }
+  return rows;
+}
+
+// ===================== ЗАПИСЬ В GOOGLE SHEETS =====================
 async function writeSheet(sheets, name, headers, rows) {
   const meta = await sheets.spreadsheets.get({ spreadsheetId: CONFIG.SPREADSHEET_ID });
   const exists = meta.data.sheets.some(s => s.properties.title === name);
@@ -315,6 +485,7 @@ async function writeSheet(sheets, name, headers, rows) {
   console.log(`✅ "${name}": ${rows.length} строк`);
 }
 
+// ===================== ГЛАВНАЯ ФУНКЦИЯ =====================
 async function syncAll() {
   console.log('=== Запуск синхронизации МойСклад ===');
   const start = Date.now();
@@ -324,6 +495,7 @@ async function syncAll() {
     const priceMap = await loadPriceMap();
     console.log(`Товаров: ${Object.keys(priceMap).length}`);
 
+    // Заказы покупателей
     const { rowsO: ordersO, rowsD: ordersD } = await loadOrders(priceMap);
     await writeSheet(sheets, CONFIG.SHEET_ORDERS, [
       'Дата', 'Номер', 'Контрагент', 'Склад', 'Канал продаж',
@@ -340,6 +512,7 @@ async function syncAll() {
       'Себест. ед.', 'Сумма себест.', 'Прибыль по позиции'
     ], ordersD);
 
+    // Отгрузки
     const { rowsO: demandO, rowsD: demandD } = await loadDemands(priceMap);
     await writeSheet(sheets, CONFIG.SHEET_DEMAND, [
       'Дата', 'Номер', 'Склад', 'Канал продаж', 'Контрагент',
@@ -354,6 +527,7 @@ async function syncAll() {
       'Себест. ед.', 'Сумма себест.', 'Прибыль по позиции'
     ], demandD);
 
+    // Возвраты
     const returns = await loadReturns(priceMap);
     await writeSheet(sheets, CONFIG.SHEET_RETURNS, [
       'Дата', 'Номер', 'Контрагент', 'Склад', 'Канал продаж',
@@ -361,86 +535,50 @@ async function syncAll() {
       'Комментарий', 'ID документа'
     ], returns);
 
+    // Входящие платежи (ОДС приход)
+    const paymentsIn = await loadPaymentsIn();
+    await writeSheet(sheets, CONFIG.SHEET_PAY_IN, [
+      'Дата', 'Номер', 'Контрагент',
+      'Сумма', 'Назначение платежа', 'Статья',
+      'Статус', 'Комментарий', 'ID документа'
+    ], paymentsIn);
+
+    // Исходящие платежи (ОДС расход)
+    const paymentsOut = await loadPaymentsOut();
+    await writeSheet(sheets, CONFIG.SHEET_PAY_OUT, [
+      'Дата', 'Номер', 'Контрагент',
+      'Сумма', 'Назначение платежа', 'Статья расхода',
+      'Статус', 'Комментарий', 'ID документа'
+    ], paymentsOut);
+
+    // Приёмки от поставщиков
+    const supplies = await loadSupplies(priceMap);
+    await writeSheet(sheets, CONFIG.SHEET_SUPPLY, [
+      'Дата', 'ID документа', 'Номер приёмки', 'Поставщик', 'Склад',
+      'Код товара', 'Наименование', 'Артикул',
+      'Кол-во', 'Цена закупки', 'Сумма закупки'
+    ], supplies);
+
+    // Заказы поставщикам
+    const purchases = await loadPurchaseOrders();
+    await writeSheet(sheets, CONFIG.SHEET_PURCHASE, [
+      'Дата', 'Номер', 'Поставщик', 'Склад',
+      'Сумма', 'Оплачено', 'Принято',
+      'Статус', 'Комментарий', 'ID документа'
+    ], purchases);
+
     console.log(`=== Готово за ${((Date.now() - start) / 1000).toFixed(1)} сек ===`);
   } catch (e) {
     console.error('ОШИБКА:', e.message, e.stack);
   }
 }
 
+// ===================== ЗАПУСК =====================
 if (process.env.RUN_ON_CRON === 'true') {
   const cron = require('node-cron');
   console.log('Сервис запущен. Синхронизация каждый день в 03:00 по Бишкеку.');
   cron.schedule('0 21 * * *', () => syncAll());
-  // Запускаем диагностику один раз при старте вместо syncAll
-  diagnose().then(() => console.log('Диагностика завершена'));
+  syncAll();
 } else {
-  diagnose().then(() => process.exit(0));
-}
-async function diagnose() {
-  console.log('=== ДИАГНОСТИКА МОЙСКЛАД ===');
-  
-  const endpoints = [
-    { url: '/entity/paymentin',     name: 'Входящие платежи' },
-    { url: '/entity/paymentout',    name: 'Исходящие платежи' },
-    { url: '/entity/cashin',        name: 'Приходные кассовые ордера' },
-    { url: '/entity/cashout',       name: 'Расходные кассовые ордера' },
-    { url: '/entity/retaildemand',  name: 'Розничные чеки' },
-    { url: '/entity/retailshift',   name: 'Розничные смены' },
-    { url: '/entity/supply',        name: 'Приёмки от поставщиков' },
-    { url: '/entity/purchaseorder', name: 'Заказы поставщикам' },
-    { url: '/entity/invoicein',     name: 'Счета от поставщиков' },
-    { url: '/entity/invoiceout',    name: 'Счета покупателям' },
-    { url: '/entity/expenseitem',   name: 'Статьи расходов' },
-    { url: '/entity/move',          name: 'Перемещения' },
-    { url: '/entity/loss',          name: 'Списания' },
-    { url: '/entity/enter',         name: 'Оприходования' },
-    { url: '/entity/inventory',     name: 'Инвентаризации' },
-    { url: '/entity/contract',      name: 'Договоры' },
-    { url: '/entity/project',       name: 'Проекты' },
-    { url: '/entity/employee',      name: 'Сотрудники' },
-    { url: '/entity/store',         name: 'Склады' },
-    { url: '/entity/organization',  name: 'Организации' },
-  ];
-
-  for (const ep of endpoints) {
-    const resp = await apiRequest(`${BASE_URL}${ep.url}?limit=1`);
-    if (resp && resp.meta) {
-      console.log(`✅ ${ep.name}: ${resp.meta.size} записей`);
-    } else {
-      console.log(`❌ ${ep.name}: нет данных или нет доступа`);
-    }
-  }
-
-  // Проверяем первый входящий платёж — смотрим структуру
-  const pay = await apiRequest(`${BASE_URL}/entity/paymentin?limit=1&expand=agent,contract,project`);
-  if (pay && pay.rows && pay.rows.length > 0) {
-    const p = pay.rows[0];
-    console.log('\n=== ПРИМЕР ВХОДЯЩЕГО ПЛАТЕЖА ===');
-    console.log('Поля:', Object.keys(p).join(', '));
-    console.log('Сумма:', p.sum);
-    console.log('Назначение:', p.paymentPurpose || 'нет');
-    console.log('Агент:', p.agent ? p.agent.name : 'нет');
-  }
-
-  // Проверяем первый исходящий платёж
-  const payOut = await apiRequest(`${BASE_URL}/entity/paymentout?limit=1&expand=agent,expenseItem`);
-  if (payOut && payOut.rows && payOut.rows.length > 0) {
-    const p = payOut.rows[0];
-    console.log('\n=== ПРИМЕР ИСХОДЯЩЕГО ПЛАТЕЖА ===');
-    console.log('Поля:', Object.keys(p).join(', '));
-    console.log('Сумма:', p.sum);
-    console.log('Статья расхода:', p.expenseItem ? p.expenseItem.name : 'нет');
-    console.log('Агент:', p.agent ? p.agent.name : 'нет');
-  }
-
-  // Проверяем кассовые ордера
-  const cash = await apiRequest(`${BASE_URL}/entity/cashin?limit=1&expand=agent`);
-  if (cash && cash.rows && cash.rows.length > 0) {
-    const p = cash.rows[0];
-    console.log('\n=== ПРИМЕР КАССОВОГО ОРДЕРА (приход) ===');
-    console.log('Поля:', Object.keys(p).join(', '));
-    console.log('Сумма:', p.sum);
-  }
-
-  console.log('\n=== ДИАГНОСТИКА ЗАВЕРШЕНА ===');
+  syncAll().then(() => process.exit(0));
 }
