@@ -371,7 +371,76 @@ if (process.env.RUN_ON_CRON === 'true') {
   const cron = require('node-cron');
   console.log('Сервис запущен. Синхронизация каждый день в 03:00 по Бишкеку.');
   cron.schedule('0 21 * * *', () => syncAll());
-  syncAll();
+  // Запускаем диагностику один раз при старте вместо syncAll
+  diagnose().then(() => console.log('Диагностика завершена'));
 } else {
-  syncAll().then(() => process.exit(0));
+  diagnose().then(() => process.exit(0));
+}
+async function diagnose() {
+  console.log('=== ДИАГНОСТИКА МОЙСКЛАД ===');
+  
+  const endpoints = [
+    { url: '/entity/paymentin',     name: 'Входящие платежи' },
+    { url: '/entity/paymentout',    name: 'Исходящие платежи' },
+    { url: '/entity/cashin',        name: 'Приходные кассовые ордера' },
+    { url: '/entity/cashout',       name: 'Расходные кассовые ордера' },
+    { url: '/entity/retaildemand',  name: 'Розничные чеки' },
+    { url: '/entity/retailshift',   name: 'Розничные смены' },
+    { url: '/entity/supply',        name: 'Приёмки от поставщиков' },
+    { url: '/entity/purchaseorder', name: 'Заказы поставщикам' },
+    { url: '/entity/invoicein',     name: 'Счета от поставщиков' },
+    { url: '/entity/invoiceout',    name: 'Счета покупателям' },
+    { url: '/entity/expenseitem',   name: 'Статьи расходов' },
+    { url: '/entity/move',          name: 'Перемещения' },
+    { url: '/entity/loss',          name: 'Списания' },
+    { url: '/entity/enter',         name: 'Оприходования' },
+    { url: '/entity/inventory',     name: 'Инвентаризации' },
+    { url: '/entity/contract',      name: 'Договоры' },
+    { url: '/entity/project',       name: 'Проекты' },
+    { url: '/entity/employee',      name: 'Сотрудники' },
+    { url: '/entity/store',         name: 'Склады' },
+    { url: '/entity/organization',  name: 'Организации' },
+  ];
+
+  for (const ep of endpoints) {
+    const resp = await apiRequest(`${BASE_URL}${ep.url}?limit=1`);
+    if (resp && resp.meta) {
+      console.log(`✅ ${ep.name}: ${resp.meta.size} записей`);
+    } else {
+      console.log(`❌ ${ep.name}: нет данных или нет доступа`);
+    }
+  }
+
+  // Проверяем первый входящий платёж — смотрим структуру
+  const pay = await apiRequest(`${BASE_URL}/entity/paymentin?limit=1&expand=agent,contract,project`);
+  if (pay && pay.rows && pay.rows.length > 0) {
+    const p = pay.rows[0];
+    console.log('\n=== ПРИМЕР ВХОДЯЩЕГО ПЛАТЕЖА ===');
+    console.log('Поля:', Object.keys(p).join(', '));
+    console.log('Сумма:', p.sum);
+    console.log('Назначение:', p.paymentPurpose || 'нет');
+    console.log('Агент:', p.agent ? p.agent.name : 'нет');
+  }
+
+  // Проверяем первый исходящий платёж
+  const payOut = await apiRequest(`${BASE_URL}/entity/paymentout?limit=1&expand=agent,expenseItem`);
+  if (payOut && payOut.rows && payOut.rows.length > 0) {
+    const p = payOut.rows[0];
+    console.log('\n=== ПРИМЕР ИСХОДЯЩЕГО ПЛАТЕЖА ===');
+    console.log('Поля:', Object.keys(p).join(', '));
+    console.log('Сумма:', p.sum);
+    console.log('Статья расхода:', p.expenseItem ? p.expenseItem.name : 'нет');
+    console.log('Агент:', p.agent ? p.agent.name : 'нет');
+  }
+
+  // Проверяем кассовые ордера
+  const cash = await apiRequest(`${BASE_URL}/entity/cashin?limit=1&expand=agent`);
+  if (cash && cash.rows && cash.rows.length > 0) {
+    const p = cash.rows[0];
+    console.log('\n=== ПРИМЕР КАССОВОГО ОРДЕРА (приход) ===');
+    console.log('Поля:', Object.keys(p).join(', '));
+    console.log('Сумма:', p.sum);
+  }
+
+  console.log('\n=== ДИАГНОСТИКА ЗАВЕРШЕНА ===');
 }
