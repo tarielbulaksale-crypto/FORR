@@ -1,13 +1,9 @@
-// index.js — МойСклад → Google Sheets
-// Листы: Заказы_МС, Заказы_МС_Детали, Выручка_МС, Выручка_МС_Детали, Возвраты_МС
-
 const { google } = require('googleapis');
 
-// ===================== КОНФИГ =====================
 const CONFIG = {
   TOKEN:          process.env.MS_TOKEN,
   SPREADSHEET_ID: process.env.SPREADSHEET_ID,
-  DATE_FROM:      '2025-01-01 00:00:00',   // с начала 2025 года
+  DATE_FROM:      '2025-01-01 00:00:00',
   SHEET_ORDERS:        'Заказы_МС',
   SHEET_ORDERS_DETAIL: 'Заказы_МС_Детали',
   SHEET_DEMAND:        'Выручка_МС',
@@ -17,7 +13,6 @@ const CONFIG = {
 
 const BASE_URL = 'https://api.moysklad.ru/api/remap/1.2';
 
-// ===================== GOOGLE AUTH =====================
 function getSheetsClient() {
   const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
   const auth = new google.auth.GoogleAuth({
@@ -27,7 +22,6 @@ function getSheetsClient() {
   return google.sheets({ version: 'v4', auth });
 }
 
-// ===================== API МОЙСКЛАД =====================
 async function apiRequest(url) {
   const resp = await fetch(url, {
     method: 'GET',
@@ -56,7 +50,6 @@ function formatDate(s) {
   return `${dd}.${mm}.${yyyy}`;
 }
 
-// ===================== СПРАВОЧНИК ТОВАРОВ =====================
 async function loadPriceMap() {
   console.log('Загрузка справочника товаров...');
   const priceMap = {};
@@ -83,7 +76,6 @@ async function loadPriceMap() {
   return priceMap;
 }
 
-// ===================== ЗАКАЗЫ ПОКУПАТЕЛЕЙ =====================
 async function loadOrders(priceMap) {
   console.log('Загрузка заказов покупателей...');
   const rowsO = [], rowsD = [];
@@ -114,17 +106,15 @@ async function loadOrders(priceMap) {
       const paid    = (doc.payedSum || 0) / 100;
       const shipped = (doc.shippedSum || 0) / 100;
       const status  = doc.applicable ? 'Проведён' : 'Черновик';
+      // ключ связи — уникальный ID документа
       const docId   = extractId(doc.meta.href);
 
-      // Кастомные атрибуты (менеджер и др.)
       let manager = '';
       if (doc.attributes && doc.attributes.length > 0) {
-        // Берём все атрибуты — запишем их в одну колонку чтобы видеть названия
         const attrs = doc.attributes.map(a => `${a.name}: ${a.value && a.value.name ? a.value.name : (a.value || '')}`);
         manager = attrs.join(' | ');
       }
 
-      // Позиции заказа
       let cost = 0;
       if (doc.positions && doc.positions.rows) {
         for (const pos of doc.positions.rows) {
@@ -143,7 +133,10 @@ async function loadOrders(priceMap) {
 
           const p = pos.assortment || {};
           rowsD.push([
-            date, number, agent, channel,
+            date,
+            docId,   // ← ID документа вместо number — для связи в Power BI
+            number,  // ← номер заказа для отображения
+            agent, channel,
             productInfo.code    || p.code    || '',
             productInfo.name    || p.name    || '',
             productInfo.article || p.article || '',
@@ -170,7 +163,6 @@ async function loadOrders(priceMap) {
   return { rowsO, rowsD };
 }
 
-// ===================== ОТГРУЗКИ =====================
 async function loadDemands(priceMap) {
   console.log('Загрузка отгрузок...');
   const rowsO = [], rowsD = [];
@@ -218,7 +210,10 @@ async function loadDemands(priceMap) {
 
           const p = pos.assortment || {};
           rowsD.push([
-            date, number, agent, channel,
+            date,
+            docId,   // ← ID документа вместо number — для связи в Power BI
+            number,  // ← номер отгрузки для отображения
+            agent, channel,
             productInfo.code    || p.code    || '',
             productInfo.name    || p.name    || '',
             productInfo.article || p.article || '',
@@ -243,7 +238,6 @@ async function loadDemands(priceMap) {
   return { rowsO, rowsD };
 }
 
-// ===================== ВОЗВРАТЫ =====================
 async function loadReturns(priceMap) {
   console.log('Загрузка возвратов...');
   const rows = [];
@@ -296,9 +290,7 @@ async function loadReturns(priceMap) {
   return rows;
 }
 
-// ===================== ЗАПИСЬ В GOOGLE SHEETS =====================
 async function writeSheet(sheets, name, headers, rows) {
-  // Создать лист если нет
   const meta = await sheets.spreadsheets.get({ spreadsheetId: CONFIG.SPREADSHEET_ID });
   const exists = meta.data.sheets.some(s => s.properties.title === name);
   if (!exists) {
@@ -323,7 +315,6 @@ async function writeSheet(sheets, name, headers, rows) {
   console.log(`✅ "${name}": ${rows.length} строк`);
 }
 
-// ===================== ГЛАВНАЯ ФУНКЦИЯ =====================
 async function syncAll() {
   console.log('=== Запуск синхронизации МойСклад ===');
   const start = Date.now();
@@ -333,7 +324,6 @@ async function syncAll() {
     const priceMap = await loadPriceMap();
     console.log(`Товаров: ${Object.keys(priceMap).length}`);
 
-    // Заказы покупателей
     const { rowsO: ordersO, rowsD: ordersD } = await loadOrders(priceMap);
     await writeSheet(sheets, CONFIG.SHEET_ORDERS, [
       'Дата', 'Номер', 'Контрагент', 'Склад', 'Канал продаж',
@@ -344,13 +334,12 @@ async function syncAll() {
     ], ordersO);
 
     await writeSheet(sheets, CONFIG.SHEET_ORDERS_DETAIL, [
-      'Дата', 'Номер заказа', 'Контрагент', 'Канал продаж',
+      'Дата', 'ID документа', 'Номер заказа', 'Контрагент', 'Канал продаж',
       'Код товара', 'Наименование', 'Артикул',
       'Кол-во', 'Цена', 'Скидка %', 'Цена со скидкой', 'Сумма продажи',
       'Себест. ед.', 'Сумма себест.', 'Прибыль по позиции'
     ], ordersD);
 
-    // Отгрузки
     const { rowsO: demandO, rowsD: demandD } = await loadDemands(priceMap);
     await writeSheet(sheets, CONFIG.SHEET_DEMAND, [
       'Дата', 'Номер', 'Склад', 'Канал продаж', 'Контрагент',
@@ -359,13 +348,12 @@ async function syncAll() {
     ], demandO);
 
     await writeSheet(sheets, CONFIG.SHEET_DEMAND_DETAIL, [
-      'Дата', 'Номер отгрузки', 'Контрагент', 'Канал продаж',
+      'Дата', 'ID документа', 'Номер отгрузки', 'Контрагент', 'Канал продаж',
       'Код товара', 'Наименование', 'Артикул',
       'Кол-во', 'Цена', 'Скидка %', 'Цена со скидкой', 'Сумма продажи',
       'Себест. ед.', 'Сумма себест.', 'Прибыль по позиции'
     ], demandD);
 
-    // Возвраты
     const returns = await loadReturns(priceMap);
     await writeSheet(sheets, CONFIG.SHEET_RETURNS, [
       'Дата', 'Номер', 'Контрагент', 'Склад', 'Канал продаж',
@@ -379,11 +367,10 @@ async function syncAll() {
   }
 }
 
-// ===================== ЗАПУСК =====================
 if (process.env.RUN_ON_CRON === 'true') {
   const cron = require('node-cron');
   console.log('Сервис запущен. Синхронизация каждый день в 03:00 по Бишкеку.');
-  cron.schedule('0 21 * * *', () => syncAll()); // 21:00 UTC = 03:00 Бишкек (UTC+6)
+  cron.schedule('0 21 * * *', () => syncAll());
   syncAll();
 } else {
   syncAll().then(() => process.exit(0));
