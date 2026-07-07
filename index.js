@@ -253,6 +253,7 @@ async function loadOrders(priceMap) {
         date, number, agent, store, channel,
         sum, paid, shipped,
         cost, grossProfit, margin,
+        doc.invoicesOut ? doc.invoicesOut.length : 0,
         doc.applicable ? 'Проведён' : 'Черновик',
         manager, doc.description || '', docId
       ]);
@@ -661,7 +662,7 @@ async function syncAll() {
       'Дата', 'Номер', 'Контрагент', 'Склад', 'Канал продаж',
       'Сумма', 'Оплачено', 'Отгружено',
       'Себестоимость', 'Валовая прибыль', 'Маржа %',
-      'Статус', 'Менеджер', 'Комментарий', 'ID документа'
+      'Кол-во счетов', 'Статус', 'Менеджер', 'Комментарий', 'ID документа'
     ], ordersO);
 
     await writeSheet(sheets, CONFIG.SHEET_ORDERS_DETAIL, [
