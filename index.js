@@ -482,15 +482,14 @@ async function loadProfitByProduct() {
   const limit = 1000;
   let total = Infinity;
 
-  // Период — с начала DATE_FROM по сегодня
-  const dateFrom = CONFIG.DATE_FROM.replace(' ', 'T');
-  const dateTo   = new Date().toISOString().split('T')[0] + 'T23:59:59';
-  const filter   = encodeURIComponent(`momentFrom=${dateFrom};momentTo=${dateTo}`);
+  // Период — параметры передаются как momentFrom и momentTo в query string
+  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM.replace(' ', 'T'));
+  const dateTo   = encodeURIComponent(new Date().toISOString().split('T')[0] + 'T23:59:59');
 
   while (offset < total) {
     const url = `${BASE_URL}/report/profit/byproduct`
       + `?limit=${limit}&offset=${offset}`
-      + `&filter=${filter}`;
+      + `&momentFrom=${dateFrom}&momentTo=${dateTo}`;
 
     const resp = await apiRequest(url);
     if (!resp) break;
@@ -530,14 +529,13 @@ async function loadProfitByClient() {
   const limit = 1000;
   let total = Infinity;
 
-  const dateFrom = CONFIG.DATE_FROM.replace(' ', 'T');
-  const dateTo   = new Date().toISOString().split('T')[0] + 'T23:59:59';
-  const filter   = encodeURIComponent(`momentFrom=${dateFrom};momentTo=${dateTo}`);
+  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM.replace(' ', 'T'));
+  const dateTo   = encodeURIComponent(new Date().toISOString().split('T')[0] + 'T23:59:59');
 
   while (offset < total) {
     const url = `${BASE_URL}/report/profit/bycounterparty`
       + `?limit=${limit}&offset=${offset}`
-      + `&filter=${filter}`;
+      + `&momentFrom=${dateFrom}&momentTo=${dateTo}`;
 
     const resp = await apiRequest(url);
     if (!resp) break;
@@ -573,14 +571,13 @@ async function loadProfitByEmployee() {
   const limit = 100;
   let total = Infinity;
 
-  const dateFrom = CONFIG.DATE_FROM.replace(' ', 'T');
-  const dateTo   = new Date().toISOString().split('T')[0] + 'T23:59:59';
-  const filter   = encodeURIComponent(`momentFrom=${dateFrom};momentTo=${dateTo}`);
+  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM.replace(' ', 'T'));
+  const dateTo   = encodeURIComponent(new Date().toISOString().split('T')[0] + 'T23:59:59');
 
   while (offset < total) {
     const url = `${BASE_URL}/report/profit/byemployee`
       + `?limit=${limit}&offset=${offset}`
-      + `&filter=${filter}`;
+      + `&momentFrom=${dateFrom}&momentTo=${dateTo}`;
 
     const resp = await apiRequest(url);
     if (!resp) break;
