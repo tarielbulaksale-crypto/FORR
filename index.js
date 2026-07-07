@@ -483,8 +483,9 @@ async function loadProfitByProduct() {
   let total = Infinity;
 
   // Период — параметры передаются как momentFrom и momentTo в query string
-  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM.replace(' ', 'T'));
-  const dateTo   = encodeURIComponent(new Date().toISOString().split('T')[0] + 'T23:59:59');
+  const now = new Date();
+  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM);
+  const dateTo   = encodeURIComponent(now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0') + ' 23:59:59');
 
   while (offset < total) {
     const url = `${BASE_URL}/report/profit/byproduct`
@@ -529,8 +530,9 @@ async function loadProfitByClient() {
   const limit = 1000;
   let total = Infinity;
 
-  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM.replace(' ', 'T'));
-  const dateTo   = encodeURIComponent(new Date().toISOString().split('T')[0] + 'T23:59:59');
+  const now = new Date();
+  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM);
+  const dateTo   = encodeURIComponent(now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0') + ' 23:59:59');
 
   while (offset < total) {
     const url = `${BASE_URL}/report/profit/bycounterparty`
@@ -571,8 +573,9 @@ async function loadProfitByEmployee() {
   const limit = 100;
   let total = Infinity;
 
-  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM.replace(' ', 'T'));
-  const dateTo   = encodeURIComponent(new Date().toISOString().split('T')[0] + 'T23:59:59');
+  const now = new Date();
+  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM);
+  const dateTo   = encodeURIComponent(now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0') + ' 23:59:59');
 
   while (offset < total) {
     const url = `${BASE_URL}/report/profit/byemployee`
