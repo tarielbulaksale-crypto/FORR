@@ -775,7 +775,7 @@ async function syncAll() {
 
     // ОСТАТКИ НА НАЧАЛО КАЖДОГО МЕСЯЦА
     const balances = await calcMonthlyBalances(paymentsIn, paymentsOut);
-    await writeSheet(sheets, CONFIG.SHEET_BALANCES, ['Дата', 'Остаток'], balances);
+    await writeSheet(sheets, CONFIG.SHEET_BALANCES, ['Дата', 'НачальныйОстаток', 'КонечныйОстаток', 'ГодМесяц'], balances);
 
     // ОБЪЕДИНЁННЫЕ ПЛАТЕЖИ (приход + расход в одной таблице со знаком)
     const paymentsAll = buildPaymentsAll(paymentsIn, paymentsOut);
@@ -792,56 +792,53 @@ async function syncAll() {
 // ===================== ОСТАТКИ НА НАЧАЛО КАЖДОГО МЕСЯЦА =====================
 async function calcMonthlyBalances(paymentsIn, paymentsOut) {
   console.log('Расчёт остатков на начало каждого месяца...');
-  const rows = [];
 
-  // Стартовая точка — 01.01.2026
   const startDate = new Date('2026-01-01');
   const today = new Date();
 
-  // Перемещение исключаем из ОБОИХ — приход и расход
-  // В приходе определяем по назначению платежа (содержит "Перемещение")
-  // В расходе определяем по статье расхода (равно "Перемещение")
   const income = paymentsIn
     .filter(r => !String(r[5] || '').includes('Перемещение'))
-    .map(r => ({
-      date: parseDate(r[0]),
-      sum: parseFloat(r[3]) || 0
-    }));
+    .map(r => ({ date: parseDate(r[0]), sum: parseFloat(r[3]) || 0 }));
 
   const expense = paymentsOut
     .filter(r => String(r[6] || '') !== 'Перемещение')
-    .map(r => ({
-      date: parseDate(r[0]),
-      sum: parseFloat(r[3]) || 0
-    }));
+    .map(r => ({ date: parseDate(r[0]), sum: parseFloat(r[3]) || 0 }));
 
-  // Перебираем каждый месяц начиная с февраля 2026
+  // Считаем остаток на начало каждого месяца
+  const balanceByMonth = [];
+  balanceByMonth.push({ date: new Date('2026-01-01'), balance: CONFIG.START_BALANCE });
+
   let d = new Date(startDate);
-  d.setMonth(d.getMonth() + 1); // начинаем с февраля — для января остаток = START_BALANCE
-
-  // Первая строка — январь 2026
-  rows.push(['01.01.2026', CONFIG.START_BALANCE]);
+  d.setMonth(d.getMonth() + 1);
 
   while (d <= today) {
     const monthStart = new Date(d);
-
-    // Сумма прихода с 01.01.2026 до начала этого месяца
     const totalIn = income
       .filter(p => p.date >= startDate && p.date < monthStart)
       .reduce((s, p) => s + p.sum, 0);
-
     const totalOut = expense
       .filter(p => p.date >= startDate && p.date < monthStart)
       .reduce((s, p) => s + p.sum, 0);
-
     const balance = CONFIG.START_BALANCE + totalIn - totalOut;
-
-    const dd = String(d.getDate()).padStart(2, '0');
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const yyyy = d.getFullYear();
-    rows.push([`${dd}.${mm}.${yyyy}`, Math.round(balance * 100) / 100]);
-
+    balanceByMonth.push({ date: new Date(d), balance: Math.round(balance * 100) / 100 });
     d.setMonth(d.getMonth() + 1);
+  }
+
+  // Строим итоговые строки с НачОстатком и КонОстатком
+  const rows = [];
+  for (let i = 0; i < balanceByMonth.length; i++) {
+    const cur = balanceByMonth[i];
+    const next = balanceByMonth[i + 1];
+    const dd = String(cur.date.getDate()).padStart(2, '0');
+    const mm = String(cur.date.getMonth() + 1).padStart(2, '0');
+    const yyyy = cur.date.getFullYear();
+    const godMesyac = yyyy * 100 + (cur.date.getMonth() + 1);
+    rows.push([
+      `${dd}.${mm}.${yyyy}`,
+      cur.balance,
+      next ? next.balance : '',
+      godMesyac
+    ]);
   }
 
   console.log(`Остатков рассчитано: ${rows.length} месяцев`);
