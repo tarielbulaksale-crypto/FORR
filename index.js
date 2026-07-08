@@ -16,6 +16,8 @@ const CONFIG = {
   SHEET_PROFIT_PRODUCT:  'Прибыль_Товары',
   SHEET_PROFIT_CLIENT:   'Прибыль_Клиенты',
   SHEET_PROFIT_EMPLOYEE: 'Прибыль_Менеджеры',
+  SHEET_BALANCES: 'Остатки_Начальные',
+  START_BALANCE: 767484.00,
 };
 
 const BASE_URL = 'https://api.moysklad.ru/api/remap/1.2';
@@ -770,10 +772,75 @@ async function syncAll() {
       'Возвращено шт', 'Сумма возвратов', 'Маржа %'
     ], profitEmployee);
 
+    // ОСТАТКИ НА НАЧАЛО КАЖДОГО МЕСЯЦА
+    const balances = await calcMonthlyBalances(paymentsIn, paymentsOut);
+    await writeSheet(sheets, CONFIG.SHEET_BALANCES, ['Дата', 'Остаток'], balances);
+
     console.log(`=== Готово за ${((Date.now() - start) / 1000).toFixed(1)} сек ===`);
   } catch (e) {
     console.error('ОШИБКА:', e.message, e.stack);
   }
+}
+
+// ===================== ОСТАТКИ НА НАЧАЛО КАЖДОГО МЕСЯЦА =====================
+async function calcMonthlyBalances(paymentsIn, paymentsOut) {
+  console.log('Расчёт остатков на начало каждого месяца...');
+  const rows = [];
+
+  // Стартовая точка — 01.01.2026
+  const startDate = new Date('2026-01-01');
+  const today = new Date();
+
+  // Собираем все платежи в удобный формат с датой как объект
+  const income = paymentsIn.map(r => ({
+    date: parseDate(r[0]),
+    sum: parseFloat(r[3]) || 0
+  }));
+  const expense = paymentsOut.map(r => ({
+    date: parseDate(r[0]),
+    sum: parseFloat(r[3]) || 0
+  }));
+
+  // Перебираем каждый месяц начиная с февраля 2026
+  let d = new Date(startDate);
+  d.setMonth(d.getMonth() + 1); // начинаем с февраля — для января остаток = START_BALANCE
+
+  // Первая строка — январь 2026
+  rows.push(['01.01.2026', CONFIG.START_BALANCE]);
+
+  while (d <= today) {
+    const monthStart = new Date(d);
+
+    // Сумма прихода с 01.01.2026 до начала этого месяца
+    const totalIn = income
+      .filter(p => p.date >= startDate && p.date < monthStart)
+      .reduce((s, p) => s + p.sum, 0);
+
+    const totalOut = expense
+      .filter(p => p.date >= startDate && p.date < monthStart)
+      .reduce((s, p) => s + p.sum, 0);
+
+    const balance = CONFIG.START_BALANCE + totalIn - totalOut;
+
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    rows.push([`${dd}.${mm}.${yyyy}`, Math.round(balance * 100) / 100]);
+
+    d.setMonth(d.getMonth() + 1);
+  }
+
+  console.log(`Остатков рассчитано: ${rows.length} месяцев`);
+  return rows;
+}
+
+function parseDate(str) {
+  if (!str) return new Date(0);
+  const parts = str.split('.');
+  if (parts.length === 3) {
+    return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+  }
+  return new Date(str);
 }
 
 // ===================== ЗАПУСК =====================
