@@ -4,20 +4,15 @@ const CONFIG = {
   TOKEN:          process.env.MS_TOKEN,
   SPREADSHEET_ID: process.env.SPREADSHEET_ID,
   DATE_FROM:      '2025-01-01 00:00:00',
-  // Листы продажи
   SHEET_DEMAND:        'Выручка_МС',
   SHEET_DEMAND_DETAIL: 'Выручка_МС_Детали',
   SHEET_RETURNS:       'Возвраты_МС',
-  // Заказы (для дебиторки и воронки)
   SHEET_ORDERS:        'Заказы_МС',
   SHEET_ORDERS_DETAIL: 'Заказы_МС_Детали',
-  // Деньги
   SHEET_PAY_IN:        'Платежи_Приход',
   SHEET_PAY_OUT:       'Платежи_Расход',
-  // Закупки
   SHEET_SUPPLY:        'Приёмки_МС',
   SHEET_PURCHASE:      'Закупки_МС',
-  // Отчёты прибыльности
   SHEET_PROFIT_PRODUCT:  'Прибыль_Товары',
   SHEET_PROFIT_CLIENT:   'Прибыль_Клиенты',
   SHEET_PROFIT_EMPLOYEE: 'Прибыль_Менеджеры',
@@ -66,6 +61,17 @@ function buildDateFilter() {
   return encodeURIComponent('moment>=' + CONFIG.DATE_FROM);
 }
 
+function buildProfitDates() {
+  const now = new Date();
+  const dateTo = now.getFullYear() + '-' +
+    String(now.getMonth() + 1).padStart(2, '0') + '-' +
+    String(now.getDate()).padStart(2, '0') + ' 23:59:59';
+  return {
+    dateFrom: encodeURIComponent(CONFIG.DATE_FROM),
+    dateTo:   encodeURIComponent(dateTo)
+  };
+}
+
 // ===================== СПРАВОЧНИК ТОВАРОВ =====================
 async function loadPriceMap() {
   console.log('Загрузка справочника товаров...');
@@ -82,7 +88,6 @@ async function loadPriceMap() {
       const id = extractId(p.meta.href);
       priceMap[id] = {
         buyPrice: (p.buyPrice && p.buyPrice.value) ? p.buyPrice.value / 100 : 0,
-        // Берём полное название и артикул из справочника — они точнее чем в позициях
         name:    p.name    || '',
         code:    p.code    || '',
         article: p.article || ''
@@ -94,7 +99,7 @@ async function loadPriceMap() {
   return priceMap;
 }
 
-// ===================== ОТГРУЗКИ (основная выручка) =====================
+// ===================== ОТГРУЗКИ =====================
 async function loadDemands(priceMap) {
   console.log('Загрузка отгрузок...');
   const rowsO = [], rowsD = [];
@@ -122,10 +127,10 @@ async function loadDemands(priceMap) {
       const channel = doc.salesChannel ? doc.salesChannel.name : (store || 'Не указан');
       const agent   = doc.agent ? doc.agent.name : '';
       const sum     = (doc.sum || 0) / 100;
+      const paid    = (doc.payedSum || 0) / 100;
       const docId   = extractId(doc.meta.href);
       let cost = 0;
 
-      // Кастомные атрибуты (менеджер)
       let manager = '';
       if (doc.attributes && doc.attributes.length > 0) {
         const attrs = doc.attributes.map(a =>
@@ -139,7 +144,6 @@ async function loadDemands(priceMap) {
           const productId   = pos.assortment ? extractId(pos.assortment.meta.href) : '';
           const productInfo = priceMap[productId] || {};
           const p           = pos.assortment || {};
-
           const qty    = pos.quantity || 0;
           const price  = (pos.price || 0) / 100;
           const disc   = pos.discount || 0;
@@ -153,7 +157,6 @@ async function loadDemands(priceMap) {
 
           rowsD.push([
             date, docId, number, agent, channel,
-            // Полное название из справочника, если есть — иначе из позиции
             productInfo.code    || p.code    || '',
             productInfo.name    || p.name    || '',
             productInfo.article || p.article || '',
@@ -166,9 +169,10 @@ async function loadDemands(priceMap) {
       const grossProfit = sum - cost;
       const margin = sum > 0 ? Math.round((grossProfit / sum) * 100) : 0;
 
+      // Порядок: Дата, Номер, Склад, Канал, Контрагент, Сумма, Оплачено, Себест, Прибыль, Маржа, Статус, Менеджер, Комментарий, ID
       rowsO.push([
         date, number, store, channel, agent,
-        sum, cost, grossProfit, margin,
+        sum, paid, cost, grossProfit, margin,
         doc.applicable ? 'Проведён' : 'Черновик',
         manager, doc.description || '', docId
       ]);
@@ -178,7 +182,7 @@ async function loadDemands(priceMap) {
   return { rowsO, rowsD };
 }
 
-// ===================== ЗАКАЗЫ ПОКУПАТЕЛЕЙ (для дебиторки и воронки) =====================
+// ===================== ЗАКАЗЫ ПОКУПАТЕЛЕЙ =====================
 async function loadOrders(priceMap) {
   console.log('Загрузка заказов покупателей...');
   const rowsO = [], rowsD = [];
@@ -475,18 +479,14 @@ async function loadPurchaseOrders() {
   return rows;
 }
 
-// ===================== ОТЧЁТ ПРИБЫЛЬНОСТЬ ПО ТОВАРАМ =====================
+// ===================== ПРИБЫЛЬНОСТЬ ПО ТОВАРАМ =====================
 async function loadProfitByProduct() {
   console.log('Загрузка прибыльности по товарам...');
   const rows = [];
   let offset = 0;
   const limit = 1000;
   let total = Infinity;
-
-  // Период — параметры передаются как momentFrom и momentTo в query string
-  const now = new Date();
-  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM);
-  const dateTo   = encodeURIComponent(now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0') + ' 23:59:59');
+  const { dateFrom, dateTo } = buildProfitDates();
 
   while (offset < total) {
     const url = `${BASE_URL}/report/profit/byproduct`
@@ -504,36 +504,29 @@ async function loadProfitByProduct() {
         product.name    || '',
         product.code    || '',
         product.article || '',
-        r.sellQuantity  || 0,       // Продано штук
-        r.sellPrice     ? r.sellPrice / 100 : 0,    // Средняя цена продажи
-        r.sellSum       ? r.sellSum / 100 : 0,      // Выручка
-        r.buySum        ? r.buySum / 100 : 0,       // Себестоимость
-        r.grossProfit   ? r.grossProfit / 100 : 0,  // Прибыль
-        r.returnQuantity || 0,      // Возвращено штук
-        r.returnSum     ? r.returnSum / 100 : 0,    // Сумма возвратов
-        // Маржа %
-        (r.sellSum && r.sellSum > 0)
-          ? Math.round((r.grossProfit / r.sellSum) * 100)
-          : 0
+        r.sellQuantity  || 0,
+        r.sellPrice     ? r.sellPrice / 100 : 0,
+        r.sellSum       ? r.sellSum / 100 : 0,
+        r.buySum        ? r.buySum / 100 : 0,
+        r.grossProfit   ? r.grossProfit / 100 : 0,
+        r.returnQuantity || 0,
+        r.returnSum     ? r.returnSum / 100 : 0,
+        (r.sellSum && r.sellSum > 0) ? Math.round((r.grossProfit / r.sellSum) * 100) : 0
       ]);
     });
-
     offset += limit;
   }
   return rows;
 }
 
-// ===================== ОТЧЁТ ПРИБЫЛЬНОСТЬ ПО КЛИЕНТАМ =====================
+// ===================== ПРИБЫЛЬНОСТЬ ПО КЛИЕНТАМ =====================
 async function loadProfitByClient() {
   console.log('Загрузка прибыльности по клиентам...');
   const rows = [];
   let offset = 0;
   const limit = 1000;
   let total = Infinity;
-
-  const now = new Date();
-  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM);
-  const dateTo   = encodeURIComponent(now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0') + ' 23:59:59');
+  const { dateFrom, dateTo } = buildProfitDates();
 
   while (offset < total) {
     const url = `${BASE_URL}/report/profit/bycounterparty`
@@ -555,28 +548,22 @@ async function loadProfitByClient() {
         r.grossProfit   ? r.grossProfit / 100 : 0,
         r.returnQuantity || 0,
         r.returnSum     ? r.returnSum / 100 : 0,
-        (r.sellSum && r.sellSum > 0)
-          ? Math.round((r.grossProfit / r.sellSum) * 100)
-          : 0
+        (r.sellSum && r.sellSum > 0) ? Math.round((r.grossProfit / r.sellSum) * 100) : 0
       ]);
     });
-
     offset += limit;
   }
   return rows;
 }
 
-// ===================== ОТЧЁТ ПРИБЫЛЬНОСТЬ ПО СОТРУДНИКАМ =====================
+// ===================== ПРИБЫЛЬНОСТЬ ПО МЕНЕДЖЕРАМ =====================
 async function loadProfitByEmployee() {
   console.log('Загрузка прибыльности по менеджерам...');
   const rows = [];
   let offset = 0;
   const limit = 100;
   let total = Infinity;
-
-  const now = new Date();
-  const dateFrom = encodeURIComponent(CONFIG.DATE_FROM);
-  const dateTo   = encodeURIComponent(now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0') + ' 23:59:59');
+  const { dateFrom, dateTo } = buildProfitDates();
 
   while (offset < total) {
     const url = `${BASE_URL}/report/profit/byemployee`
@@ -598,12 +585,9 @@ async function loadProfitByEmployee() {
         r.grossProfit   ? r.grossProfit / 100 : 0,
         r.returnQuantity || 0,
         r.returnSum     ? r.returnSum / 100 : 0,
-        (r.sellSum && r.sellSum > 0)
-          ? Math.round((r.grossProfit / r.sellSum) * 100)
-          : 0
+        (r.sellSum && r.sellSum > 0) ? Math.round((r.grossProfit / r.sellSum) * 100) : 0
       ]);
     });
-
     offset += limit;
   }
   return rows;
@@ -641,11 +625,11 @@ async function syncAll() {
     const priceMap = await loadPriceMap();
     console.log(`Товаров: ${Object.keys(priceMap).length}`);
 
-    // --- ОТГРУЗКИ (основная выручка) ---
+    // ОТГРУЗКИ — основная выручка
     const { rowsO: demandO, rowsD: demandD } = await loadDemands(priceMap);
     await writeSheet(sheets, CONFIG.SHEET_DEMAND, [
       'Дата', 'Номер', 'Склад', 'Канал продаж', 'Контрагент',
-      'Сумма (сом)', 'Себестоимость (сом)', 'Валовая прибыль',
+      'Сумма (сом)', 'Оплачено', 'Себестоимость (сом)', 'Валовая прибыль',
       'Маржа %', 'Статус', 'Менеджер', 'Комментарий', 'ID документа'
     ], demandO);
 
@@ -656,7 +640,7 @@ async function syncAll() {
       'Себест. ед.', 'Сумма себест.', 'Прибыль по позиции'
     ], demandD);
 
-    // --- ЗАКАЗЫ (дебиторка и воронка) ---
+    // ЗАКАЗЫ — дебиторка и воронка
     const { rowsO: ordersO, rowsD: ordersD } = await loadOrders(priceMap);
     await writeSheet(sheets, CONFIG.SHEET_ORDERS, [
       'Дата', 'Номер', 'Контрагент', 'Склад', 'Канал продаж',
@@ -672,7 +656,7 @@ async function syncAll() {
       'Себест. ед.', 'Сумма себест.', 'Прибыль по позиции'
     ], ordersD);
 
-    // --- ВОЗВРАТЫ ---
+    // ВОЗВРАТЫ
     const returns = await loadReturns(priceMap);
     await writeSheet(sheets, CONFIG.SHEET_RETURNS, [
       'Дата', 'Номер', 'Контрагент', 'Склад', 'Канал продаж',
@@ -680,7 +664,7 @@ async function syncAll() {
       'Комментарий', 'ID документа'
     ], returns);
 
-    // --- ПЛАТЕЖИ ---
+    // ПЛАТЕЖИ
     const paymentsIn = await loadPaymentsIn();
     await writeSheet(sheets, CONFIG.SHEET_PAY_IN, [
       'Дата', 'Номер', 'Контрагент', 'Сумма',
@@ -693,7 +677,7 @@ async function syncAll() {
       'Назначение платежа', 'Статья расхода', 'Статус', 'Комментарий', 'ID документа'
     ], paymentsOut);
 
-    // --- ЗАКУПКИ ---
+    // ЗАКУПКИ
     const supplies = await loadSupplies(priceMap);
     await writeSheet(sheets, CONFIG.SHEET_SUPPLY, [
       'Дата', 'ID документа', 'Номер приёмки', 'Поставщик', 'Склад',
@@ -707,7 +691,7 @@ async function syncAll() {
       'Сумма', 'Оплачено', 'Принято', 'Статус', 'Комментарий', 'ID документа'
     ], purchases);
 
-    // --- ОТЧЁТЫ ПРИБЫЛЬНОСТИ (из МойСклад напрямую) ---
+    // ПРИБЫЛЬНОСТЬ
     const profitProduct = await loadProfitByProduct();
     await writeSheet(sheets, CONFIG.SHEET_PROFIT_PRODUCT, [
       'Наименование', 'Код', 'Артикул',
