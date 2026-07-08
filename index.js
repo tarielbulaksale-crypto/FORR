@@ -318,31 +318,30 @@ async function loadReturns(priceMap) {
 }
 
 // ===================== ВХОДЯЩИЕ ПЛАТЕЖИ =====================
+// ===================== ВХОДЯЩИЕ ПЛАТЕЖИ (Банк + Касса) =====================
 async function loadPaymentsIn() {
-  console.log('Загрузка входящих платежей...');
+  console.log('Загрузка входящих платежей (банк + касса)...');
   const rows = [];
-  let offset = 0;
-  const limit = 100;
-  let total = Infinity;
   const filter = buildDateFilter();
 
+  // Банк — paymentin
+  let offset = 0, limit = 100, total = Infinity;
   while (offset < total) {
     const url = `${BASE_URL}/entity/paymentin`
       + `?limit=${limit}&offset=${offset}`
       + `&filter=${filter}`
       + `&expand=agent,expenseItem`
       + `&order=moment%2Casc`;
-
     const resp = await apiRequest(url);
     if (!resp) break;
     total = resp.meta.size;
-    console.log(`Платежи приход: ${Math.min(offset + limit, total)} из ${total}`);
-
+    console.log(`Платежи приход (банк): ${Math.min(offset + limit, total)} из ${total}`);
     for (const doc of resp.rows) {
       rows.push([
         formatDate(doc.moment), doc.name || '',
         doc.agent ? doc.agent.name : '',
         (doc.sum || 0) / 100,
+        'Банк',
         doc.paymentPurpose || '',
         doc.expenseItem ? doc.expenseItem.name : '',
         doc.applicable ? 'Проведён' : 'Черновик',
@@ -351,35 +350,63 @@ async function loadPaymentsIn() {
     }
     offset += limit;
   }
+
+  // Касса — cashin
+  offset = 0; total = Infinity;
+  while (offset < total) {
+    const url = `${BASE_URL}/entity/cashin`
+      + `?limit=${limit}&offset=${offset}`
+      + `&filter=${filter}`
+      + `&expand=agent,expenseItem`
+      + `&order=moment%2Casc`;
+    const resp = await apiRequest(url);
+    if (!resp) break;
+    total = resp.meta.size;
+    console.log(`Платежи приход (касса): ${Math.min(offset + limit, total)} из ${total}`);
+    for (const doc of resp.rows) {
+      rows.push([
+        formatDate(doc.moment), doc.name || '',
+        doc.agent ? doc.agent.name : '',
+        (doc.sum || 0) / 100,
+        'Касса',
+        doc.paymentPurpose || '',
+        doc.expenseItem ? doc.expenseItem.name : '',
+        doc.applicable ? 'Проведён' : 'Черновик',
+        doc.description || '', extractId(doc.meta.href)
+      ]);
+    }
+    offset += limit;
+  }
+
+  // Сортируем по дате
+  rows.sort((a, b) => a[0].localeCompare(b[0]));
   return rows;
 }
 
-// ===================== ИСХОДЯЩИЕ ПЛАТЕЖИ =====================
+// ===================== ИСХОДЯЩИЕ ПЛАТЕЖИ (Банк + Касса) =====================
 async function loadPaymentsOut() {
-  console.log('Загрузка исходящих платежей...');
+  console.log('Загрузка исходящих платежей (банк + касса)...');
   const rows = [];
-  let offset = 0;
-  const limit = 100;
-  let total = Infinity;
   const filter = buildDateFilter();
 
+  // Банк — paymentout
+  let offset = 0, limit = 100, total = Infinity;
   while (offset < total) {
     const url = `${BASE_URL}/entity/paymentout`
       + `?limit=${limit}&offset=${offset}`
       + `&filter=${filter}`
       + `&expand=agent,expenseItem`
       + `&order=moment%2Casc`;
-
     const resp = await apiRequest(url);
     if (!resp) break;
     total = resp.meta.size;
-    console.log(`Платежи расход: ${Math.min(offset + limit, total)} из ${total}`);
-
+    console.log(`Платежи расход (банк): ${Math.min(offset + limit, total)} из ${total}`);
     for (const doc of resp.rows) {
       rows.push([
         formatDate(doc.moment), doc.name || '',
         doc.agent ? doc.agent.name : '',
         (doc.sum || 0) / 100,
+        'Банк',
         doc.paymentPurpose || '',
         doc.expenseItem ? doc.expenseItem.name : '',
         doc.applicable ? 'Проведён' : 'Черновик',
@@ -388,6 +415,35 @@ async function loadPaymentsOut() {
     }
     offset += limit;
   }
+
+  // Касса — cashout
+  offset = 0; total = Infinity;
+  while (offset < total) {
+    const url = `${BASE_URL}/entity/cashout`
+      + `?limit=${limit}&offset=${offset}`
+      + `&filter=${filter}`
+      + `&expand=agent,expenseItem`
+      + `&order=moment%2Casc`;
+    const resp = await apiRequest(url);
+    if (!resp) break;
+    total = resp.meta.size;
+    console.log(`Платежи расход (касса): ${Math.min(offset + limit, total)} из ${total}`);
+    for (const doc of resp.rows) {
+      rows.push([
+        formatDate(doc.moment), doc.name || '',
+        doc.agent ? doc.agent.name : '',
+        (doc.sum || 0) / 100,
+        'Касса',
+        doc.paymentPurpose || '',
+        doc.expenseItem ? doc.expenseItem.name : '',
+        doc.applicable ? 'Проведён' : 'Черновик',
+        doc.description || '', extractId(doc.meta.href)
+      ]);
+    }
+    offset += limit;
+  }
+
+  rows.sort((a, b) => a[0].localeCompare(b[0]));
   return rows;
 }
 
@@ -667,13 +723,13 @@ async function syncAll() {
     // ПЛАТЕЖИ
     const paymentsIn = await loadPaymentsIn();
     await writeSheet(sheets, CONFIG.SHEET_PAY_IN, [
-      'Дата', 'Номер', 'Контрагент', 'Сумма',
+      'Дата', 'Номер', 'Контрагент', 'Сумма', 'Источник',
       'Назначение платежа', 'Статья', 'Статус', 'Комментарий', 'ID документа'
     ], paymentsIn);
 
     const paymentsOut = await loadPaymentsOut();
     await writeSheet(sheets, CONFIG.SHEET_PAY_OUT, [
-      'Дата', 'Номер', 'Контрагент', 'Сумма',
+      'Дата', 'Номер', 'Контрагент', 'Сумма', 'Источник',
       'Назначение платежа', 'Статья расхода', 'Статус', 'Комментарий', 'ID документа'
     ], paymentsOut);
 
