@@ -792,14 +792,23 @@ async function calcMonthlyBalances(paymentsIn, paymentsOut) {
   const today = new Date();
 
   // Собираем все платежи в удобный формат с датой как объект
-  const income = paymentsIn.map(r => ({
-    date: parseDate(r[0]),
-    sum: parseFloat(r[3]) || 0
-  }));
-  const expense = paymentsOut.map(r => ({
-    date: parseDate(r[0]),
-    sum: parseFloat(r[3]) || 0
-  }));
+  // Исключаем Перемещение — это внутренний перевод между кассой и банком,
+  // не влияет на общий остаток компании
+  const EXCLUDE_CATEGORIES = ['Перемещение'];
+
+  const income = paymentsIn
+    .filter(r => !EXCLUDE_CATEGORIES.includes(r[6]))
+    .map(r => ({
+      date: parseDate(r[0]),
+      sum: parseFloat(r[3]) || 0
+    }));
+
+  const expense = paymentsOut
+    .filter(r => !EXCLUDE_CATEGORIES.includes(r[6]))
+    .map(r => ({
+      date: parseDate(r[0]),
+      sum: parseFloat(r[3]) || 0
+    }));
 
   // Перебираем каждый месяц начиная с февраля 2026
   let d = new Date(startDate);
