@@ -17,6 +17,7 @@ const CONFIG = {
   SHEET_PROFIT_CLIENT:   'Прибыль_Клиенты',
   SHEET_PROFIT_EMPLOYEE: 'Прибыль_Менеджеры',
   SHEET_BALANCES: 'Остатки_Начальные',
+  SHEET_PAYMENTS_ALL: 'Платежи_Все',
   START_BALANCE: 767484.00,
 };
 
@@ -776,6 +777,12 @@ async function syncAll() {
     const balances = await calcMonthlyBalances(paymentsIn, paymentsOut);
     await writeSheet(sheets, CONFIG.SHEET_BALANCES, ['Дата', 'Остаток'], balances);
 
+    // ОБЪЕДИНЁННЫЕ ПЛАТЕЖИ (приход + расход в одной таблице со знаком)
+    const paymentsAll = buildPaymentsAll(paymentsIn, paymentsOut);
+    await writeSheet(sheets, CONFIG.SHEET_PAYMENTS_ALL, [
+      'Дата', 'Номер', 'Контрагент', 'Сумма', 'Сумма со знаком',
+      'Тип', 'Источник', 'Назначение', 'Статья', 'Статус'
+    ], paymentsAll);
     console.log(`=== Готово за ${((Date.now() - start) / 1000).toFixed(1)} сек ===`);
   } catch (e) {
     console.error('ОШИБКА:', e.message, e.stack);
@@ -858,4 +865,52 @@ if (process.env.RUN_ON_CRON === 'true') {
   syncAll();
 } else {
   syncAll().then(() => process.exit(0));
+}
+
+// ===================== ОБЪЕДИНЁННЫЕ ПЛАТЕЖИ =====================
+function buildPaymentsAll(paymentsIn, paymentsOut) {
+  console.log('Построение объединённой таблицы платежей...');
+  const rows = [];
+
+  // Приход — положительная сумма
+  for (const r of paymentsIn) {
+    // Исключаем перемещения
+    if (String(r[5] || '').includes('Перемещение')) continue;
+    rows.push([
+      r[0],           // Дата
+      r[1],           // Номер
+      r[2],           // Контрагент
+      r[3],           // Сумма
+      r[3],           // Сумма со знаком (положительная)
+      'Приход',       // Тип
+      r[4],           // Источник (Банк/Касса)
+      r[5],           // Назначение
+      r[6],           // Статья
+      r[7],           // Статус
+    ]);
+  }
+
+  // Расход — отрицательная сумма
+  for (const r of paymentsOut) {
+    // Исключаем перемещения
+    if (String(r[6] || '') === 'Перемещение') continue;
+    const sum = parseFloat(r[3]) || 0;
+    rows.push([
+      r[0],           // Дата
+      r[1],           // Номер
+      r[2],           // Контрагент
+      r[3],           // Сумма (положительное число)
+      -sum,           // Сумма со знаком (отрицательная)
+      'Расход',       // Тип
+      r[4],           // Источник (Банк/Касса)
+      r[5],           // Назначение
+      r[6],           // Статья расхода
+      r[7],           // Статус
+    ]);
+  }
+
+  // Сортируем по дате
+  rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  console.log(`Платежи_Все: ${rows.length} строк`);
+  return rows;
 }
