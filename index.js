@@ -791,20 +791,18 @@ async function calcMonthlyBalances(paymentsIn, paymentsOut) {
   const startDate = new Date('2026-01-01');
   const today = new Date();
 
-  // Собираем все платежи в удобный формат с датой как объект
-  // Исключаем Перемещение — это внутренний перевод между кассой и банком,
-  // не влияет на общий остаток компании
-  const EXCLUDE_CATEGORIES = ['Перемещение'];
-
+  // Перемещение исключаем из ОБОИХ — приход и расход
+  // В приходе определяем по назначению платежа (содержит "Перемещение")
+  // В расходе определяем по статье расхода (равно "Перемещение")
   const income = paymentsIn
-    .filter(r => !EXCLUDE_CATEGORIES.includes(r[6]))
+    .filter(r => !String(r[5] || '').includes('Перемещение'))
     .map(r => ({
       date: parseDate(r[0]),
       sum: parseFloat(r[3]) || 0
     }));
 
   const expense = paymentsOut
-    .filter(r => !EXCLUDE_CATEGORIES.includes(r[6]))
+    .filter(r => String(r[6] || '') !== 'Перемещение')
     .map(r => ({
       date: parseDate(r[0]),
       sum: parseFloat(r[3]) || 0
